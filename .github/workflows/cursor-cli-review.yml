@@ -125,11 +125,20 @@ jobs:
           export BASE_SHA="${{ github.event.pull_request.base.sha }}"
           export BLOCK_REVIEW="${{ env.BLOCKING_REVIEW }}"
 
-          sed -i "s/__GITHUB_REPOSITORY__/$REPO_NAME/g" /tmp/review_prompt.txt
-          sed -i "s/__PR_NUMBER__/$PR_NUM/g" /tmp/review_prompt.txt
-          sed -i "s/__PR_HEAD_SHA__/$HEAD_SHA/g" /tmp/review_prompt.txt
-          sed -i "s/__PR_BASE_SHA__/$BASE_SHA/g" /tmp/review_prompt.txt
-          sed -i "s/__BLOCKING_REVIEW__/$BLOCK_REVIEW/g" /tmp/review_prompt.txt
+          # Safe replacement using awk to handle special characters
+          awk -v repo="$REPO_NAME" \
+               -v pr_num="$PR_NUM" \
+               -v head_sha="$HEAD_SHA" \
+               -v base_sha="$BASE_SHA" \
+               -v block_review="$BLOCK_REVIEW" \
+               '{
+                 gsub(/__GITHUB_REPOSITORY__/, repo);
+                 gsub(/__PR_NUMBER__/, pr_num);
+                 gsub(/__PR_HEAD_SHA__/, head_sha);
+                 gsub(/__PR_BASE_SHA__/, base_sha);
+                 gsub(/__BLOCKING_REVIEW__/, block_review);
+                 print;
+               }' /tmp/review_prompt.txt > /tmp/review_prompt_final.txt && mv /tmp/review_prompt_final.txt /tmp/review_prompt.txt
 
           # Verify we can access the PR with the final values
           echo "Testing PR access with final values:"
