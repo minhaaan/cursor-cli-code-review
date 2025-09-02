@@ -7,6 +7,8 @@ on:
 permissions:
   pull-requests: write
   contents: read
+  issues: write
+  repository-projects: read
 
 jobs:
   code-review:
@@ -20,14 +22,24 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Install GitHub CLI
+        run: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh -y
+
       - name: Install Cursor CLI
         run: |
           curl https://cursor.com/install -fsS | bash
           echo "$HOME/.cursor/bin" >> $GITHUB_PATH
+
       - name: Configure git identity
         run: |
           git config user.name "Cursor Agent"
           git config user.email "cursoragent@cursor.com"
+
       - name: Perform automated code review
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
@@ -35,7 +47,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
         run: |
-          cat << 'EOF' | cursor-agent -p "$(cat)"
+          # Authenticate GitHub CLI
+          echo "$GH_TOKEN" | gh auth login --with-token
+
+          # Verify gh CLI is working
+          gh --version
+
+          # Create prompt file for cursor-agent
+          cat > /tmp/review_prompt.txt << 'EOF'
           You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
@@ -59,9 +78,9 @@ jobs:
           - If CURRENT run finds issues and any prior "no issues" comments exist:
             - Prefer to remove them to avoid confusion:
               - Try deleting top-level issue comments via: gh api -X DELETE repos/${{ github.repository }}/issues/comments/<comment_id>
+              - If deletion isn't possible, minimize them via GraphQL "minimizeComment" or edit to prefix "[Superseded by new findings]".
             - If neither delete nor minimize is possible, reply to that comment: "⚠️ Superseded: issues were found in newer commits".
           - If a previously reported issue appears fixed by nearby changes, reply: ✅ This issue appears to be resolved by the recent changes
-
           - Analyze ONLY for:
             - Null/undefined dereferences
             - Resource leaks (unclosed files or connections)
@@ -71,7 +90,6 @@ jobs:
             - Obvious logic errors with incorrect behavior
             - Clear performance anti-patterns with measurable impact
             - Definitive security vulnerabilities
-
           - Avoid duplicates: skip if similar feedback already exists on or near the same lines.
 
           Commenting rules:
@@ -92,14 +110,26 @@ jobs:
           - Otherwise: echo "CRITICAL_ISSUES_FOUND=false" >> $GITHUB_ENV
           - Always set CRITICAL_ISSUES_FOUND at the end
           EOF
+
+          # Run cursor-agent with the prompt file
+          cursor-agent -p "$(cat /tmp/review_prompt.txt)"
+
       - name: Check blocking review results
         if: env.BLOCKING_REVIEW == 'true'
         run: |
           echo "Checking for critical issues..."
           echo "CRITICAL_ISSUES_FOUND: ${CRITICAL_ISSUES_FOUND:-unset}"
+
           if [ "${CRITICAL_ISSUES_FOUND:-false}" = "true" ]; then
             echo "❌ Critical issues found and blocking review is enabled. Failing the workflow."
             exit 1
           else
             echo "✅ No blocking issues found."
           fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up temporary files..."
+          rm -f /tmp/review_prompt.txt
+          echo "✅ Cleanup completed."
