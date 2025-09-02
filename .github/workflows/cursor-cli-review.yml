@@ -7,8 +7,6 @@ on:
 permissions:
   pull-requests: write
   contents: read
-  issues: write
-  repository-projects: read
 
 jobs:
   code-review:
@@ -21,14 +19,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Install GitHub CLI
-        run: |
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update
-          sudo apt install gh -y
 
       - name: Install Cursor CLI
         run: |
@@ -47,15 +37,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
         run: |
-          # Authenticate GitHub CLI
-          echo "$GH_TOKEN" | gh auth login --with-token
-
-          # Verify gh CLI is working
-          gh --version
-
-          # Create prompt file for cursor-agent
-          cat > /tmp/review_prompt.txt << 'EOF'
-          You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
+          cursor-agent -p 'You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
           - Repo: ${{ github.repository }}
@@ -109,10 +91,7 @@ jobs:
           - If BLOCKING_REVIEW is true and any 🚨 or 🔒 issues were posted: echo "CRITICAL_ISSUES_FOUND=true" >> $GITHUB_ENV
           - Otherwise: echo "CRITICAL_ISSUES_FOUND=false" >> $GITHUB_ENV
           - Always set CRITICAL_ISSUES_FOUND at the end
-          EOF
-
-          # Run cursor-agent with the prompt file
-          cursor-agent -p "$(cat /tmp/review_prompt.txt)"
+          '
 
       - name: Check blocking review results
         if: env.BLOCKING_REVIEW == 'true'
@@ -126,10 +105,3 @@ jobs:
           else
             echo "✅ No blocking issues found."
           fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          echo "Cleaning up temporary files..."
-          rm -f /tmp/review_prompt.txt
-          echo "✅ Cleanup completed."
