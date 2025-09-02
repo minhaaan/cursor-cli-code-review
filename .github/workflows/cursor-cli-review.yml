@@ -44,14 +44,18 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           MODEL: gpt-5
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
         run: |
-          # Authenticate GitHub CLI
-          echo "$GH_TOKEN" | gh auth login --with-token
+          # Set up GitHub CLI authentication
+          export GH_TOKEN="$GITHUB_TOKEN"
 
-          # Verify gh CLI is working
+          # Authenticate GitHub CLI (skip login command to avoid GH_TOKEN warning)
+          # GitHub CLI will automatically use GH_TOKEN from environment
+
+          # Verify gh CLI is working and authenticated
           gh --version
+          gh auth status
 
           # Create prompt file for cursor-agent
           cat > /tmp/review_prompt.txt << 'EOF'
