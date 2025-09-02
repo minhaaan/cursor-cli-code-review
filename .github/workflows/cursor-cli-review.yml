@@ -2,13 +2,12 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   pull-requests: write
   contents: read
   issues: write
-  repository-projects: read
 
 jobs:
   code-review:
@@ -22,14 +21,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install GitHub CLI
-        run: |
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update
-          sudo apt install gh -y
-
       - name: Install Cursor CLI
         run: |
           curl https://cursor.com/install -fsS | bash
@@ -40,36 +31,20 @@ jobs:
           git config user.name "Cursor Agent"
           git config user.email "cursoragent@cursor.com"
 
-      - name: Perform automated code review
-        env:
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          MODEL: gpt-5
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
+      - name: Create review script
         run: |
-          # Set up GitHub CLI authentication
-          export GH_TOKEN="$GITHUB_TOKEN"
+          cat << 'EOF' > ./run_code_review.sh
+          #!/bin/bash
+          set -e
 
-          # Authenticate GitHub CLI (skip login command to avoid GH_TOKEN warning)
-          # GitHub CLI will automatically use GH_TOKEN from environment
-
-          # Verify gh CLI is working and authenticated
-          echo "GitHub CLI version:"
-          gh --version
-          echo "GitHub CLI auth status:"
-          gh auth status
-
-          # Create prompt file for cursor-agent
-          # Use sed to replace placeholders with actual values
-          cat > /tmp/review_prompt.txt << 'EOF'
-          You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
+          PROMPT='You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
-          - Repo: __GITHUB_REPOSITORY__
-          - PR Number: __PR_NUMBER__
-          - PR Head SHA: __PR_HEAD_SHA__
-          - PR Base SHA: __PR_BASE_SHA__
-          - Blocking Review: __BLOCKING_REVIEW__
+          - Repo: ${{ github.repository }}
+          - PR Number: ${{ github.event.pull_request.number }}
+          - PR Head SHA: ${{ github.event.pull_request.head.sha }}
+          - PR Base SHA: ${{ github.event.pull_request.base.sha }}
+          - Blocking Review: ${{ env.BLOCKING_REVIEW }}
 
           Objectives:
           1) Re-check existing review comments and reply resolved when addressed.
@@ -79,13 +54,13 @@ jobs:
           Procedure:
           - Get existing comments: gh pr view --json comments
           - Get diff: gh pr diff
-          - Get changed files with patches to compute inline positions: gh api repos/__GITHUB_REPOSITORY__/pulls/__PR_NUMBER__/files --paginate --jq '.[] | {filename,patch}'
+          - Get changed files with patches to compute inline positions: gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq ".[] | {filename,patch}"
           - Compute exact inline anchors for each issue (file path + diff position). Comments MUST be placed inline on the changed line in the diff, not as top-level comments.
           - Detect prior top-level "no issues" style comments authored by this bot (match bodies like: "✅ no issues", "No issues found", "LGTM").
           - If CURRENT run finds issues and any prior "no issues" comments exist:
             - Prefer to remove them to avoid confusion:
-              - Try deleting top-level issue comments via: gh api -X DELETE repos/__GITHUB_REPOSITORY__/issues/comments/<comment_id>
-              - If deletion isn't possible, minimize them via GraphQL "minimizeComment" or edit to prefix "[Superseded by new findings]".
+              - Try deleting top-level issue comments via: gh api -X DELETE repos/${{ github.repository }}/issues/comments/<comment_id>
+              - If deletion isn't possible, minimize them via GraphQL (minimizeComment) or edit to prefix "[Superseded by new findings]".
             - If neither delete nor minimize is possible, reply to that comment: "⚠️ Superseded: issues were found in newer commits".
           - If a previously reported issue appears fixed by nearby changes, reply: ✅ This issue appears to be resolved by the recent changes
           - Analyze ONLY for:
@@ -100,7 +75,6 @@ jobs:
           - Avoid duplicates: skip if similar feedback already exists on or near the same lines.
 
           Commenting rules:
-          - *중요*: 모든 응답은 한국어로 해주세요.
           - Max 10 inline comments total; prioritize the most critical issues
           - One issue per comment; place on the exact changed line
           - All issue comments MUST be inline (anchored to a file and line/position in the PR diff)
@@ -108,66 +82,31 @@ jobs:
           - Use emojis: 🚨 Critical 🔒 Security ⚡ Performance ⚠️ Logic ✅ Resolved ✨ Improvement
 
           Submission:
-          - Submit one review containing inline comments plus a concise summary
-          - Use only: gh pr review --comment
-          - Do not use: gh pr review --approve or --request-changes
+          - If there are NO issues to report and an existing top-level comment indicating "no issues" already exists (e.g., "✅ no issues", "No issues found", "LGTM"), do NOT submit another comment. Skip submission to avoid redundancy.
+          - If there are NO issues to report and NO prior "no issues" comment exists, submit one brief summary comment noting no issues.
+          - If there ARE issues to report and a prior "no issues" comment exists, ensure that prior comment is deleted/minimized/marked as superseded before submitting the new review.
+          - If there ARE issues to report, submit ONE review containing ONLY inline comments plus an optional concise summary body. Use the GitHub Reviews API to ensure comments are inline:
+            - Build a JSON array of comments like: [{ "path": "<file>", "position": <diff_position>, "body": "..." }]
+            - Submit via: gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f event=COMMENT -f body="$SUMMARY" -f comments="[$COMMENTS_JSON]"
+          - Do NOT use: gh pr review --approve or --request-changes
 
           Blocking behavior:
           - If BLOCKING_REVIEW is true and any 🚨 or 🔒 issues were posted: echo "CRITICAL_ISSUES_FOUND=true" >> $GITHUB_ENV
           - Otherwise: echo "CRITICAL_ISSUES_FOUND=false" >> $GITHUB_ENV
           - Always set CRITICAL_ISSUES_FOUND at the end
+          '
+
+          cursor-agent --force --model "$MODEL" --output-format=text --print "$PROMPT"
           EOF
+          chmod +x ./run_code_review.sh
 
-          # Replace placeholders with actual values using environment variables
-          export REPO_NAME="${{ github.repository }}"
-          export PR_NUM="${{ github.event.pull_request.number }}"
-          export HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          export BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          export BLOCK_REVIEW="${{ env.BLOCKING_REVIEW }}"
-
-          # Safe replacement using awk to handle special characters
-          awk -v repo="$REPO_NAME" \
-               -v pr_num="$PR_NUM" \
-               -v head_sha="$HEAD_SHA" \
-               -v base_sha="$BASE_SHA" \
-               -v block_review="$BLOCK_REVIEW" \
-               '{
-                 gsub(/__GITHUB_REPOSITORY__/, repo);
-                 gsub(/__PR_NUMBER__/, pr_num);
-                 gsub(/__PR_HEAD_SHA__/, head_sha);
-                 gsub(/__PR_BASE_SHA__/, base_sha);
-                 gsub(/__BLOCKING_REVIEW__/, block_review);
-                 print;
-               }' /tmp/review_prompt.txt > /tmp/review_prompt_final.txt && mv /tmp/review_prompt_final.txt /tmp/review_prompt.txt
-
-          # Verify we can access the PR with the final values
-          echo "Testing PR access with final values:"
-          gh pr view $PR_NUM --json number,title || echo "❌ Cannot access PR"
-          echo "PR access test completed"
-
-          # Debug: Show the final prompt content
-          echo "=== Final Prompt Content ==="
-          cat /tmp/review_prompt.txt
-          echo "=== End Prompt ==="
-
-          # Run cursor-agent with the prompt file
-          echo "=== Running cursor-agent ==="
-          # Capture cursor-agent output for debugging
-          CURSOR_OUTPUT=$(cursor-agent -p "$(cat /tmp/review_prompt.txt)" 2>&1)
-          CURSOR_EXIT_CODE=$?
-
-          echo "Cursor-agent exit code: $CURSOR_EXIT_CODE"
-          echo "Cursor-agent output:"
-          echo "$CURSOR_OUTPUT"
-
-          # Check if cursor-agent actually tried to create comments
-          if echo "$CURSOR_OUTPUT" | grep -q "gh pr review"; then
-            echo "✅ Cursor-agent attempted to create PR review"
-          else
-            echo "❌ Cursor-agent did not attempt to create PR review"
-          fi
-
-          echo "=== cursor-agent execution completed ==="
+      - name: Perform automated code review
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          MODEL: gpt-5
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
+        run: ./run_code_review.sh
 
       - name: Check blocking review results
         if: env.BLOCKING_REVIEW == 'true'
@@ -181,10 +120,3 @@ jobs:
           else
             echo "✅ No blocking issues found."
           fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          echo "Cleaning up temporary files..."
-          rm -f /tmp/review_prompt.txt
-          echo "✅ Cleanup completed."
