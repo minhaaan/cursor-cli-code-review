@@ -33,11 +33,15 @@ jobs:
 
       - name: Create review script
         run: |
-          cat << 'EOF' > ./run_code_review.sh
+          # Use a here-document to allow GitHub Actions variables like ${{...}} to be expanded.
+          cat << EOF > ./run_code_review.sh
           #!/bin/bash
           set -e
 
-          PROMPT='You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
+          # Use read with a here-document to safely assign the multi-line prompt to a variable.
+          # This robustly handles special characters like single quotes (') and parentheses (()).
+          read -r -d '' PROMPT <<'EOP'
+          You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
           - Repo: ${{ github.repository }}
@@ -94,9 +98,9 @@ jobs:
           - If BLOCKING_REVIEW is true and any 🚨 or 🔒 issues were posted: echo "CRITICAL_ISSUES_FOUND=true" >> $GITHUB_ENV
           - Otherwise: echo "CRITICAL_ISSUES_FOUND=false" >> $GITHUB_ENV
           - Always set CRITICAL_ISSUES_FOUND at the end
-          '
+          EOP
 
-          cursor-agent --force --model "$MODEL" --output-format=text --print "$PROMPT"
+          cursor-agent --force --model "$MODEL" --output-format=text --print "\$PROMPT"
           EOF
           chmod +x ./run_code_review.sh
 
@@ -120,3 +124,4 @@ jobs:
           else
             echo "✅ No blocking issues found."
           fi
+
