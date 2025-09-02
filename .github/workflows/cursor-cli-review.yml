@@ -2,7 +2,7 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   pull-requests: write
@@ -31,15 +31,13 @@ jobs:
           git config user.email "cursoragent@cursor.com"
 
       - name: Perform automated code review
-        continue-on-error: true
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           MODEL: gpt-5
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
         run: |
-          PROMPT=$(cat <<'EOF'
-          You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
+          cursor-agent -p 'You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
           - Repo: ${{ github.repository }}
@@ -56,14 +54,6 @@ jobs:
           Procedure:
           - Get existing comments: gh pr view --json comments
           - Get diff: gh pr diff
-          - Get changed files with patches to compute inline positions: gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq '.[] | {filename,patch}'
-          - Compute exact inline anchors for each issue (file path + diff position). Comments MUST be placed inline on the changed line in the diff, not as top-level comments.
-          - Detect prior top-level "no issues" style comments authored by this bot (match bodies like: "✅ no issues", "No issues found", "LGTM").
-          - If CURRENT run finds issues and any prior "no issues" comments exist:
-            - Prefer to remove them to avoid confusion:
-              - Try deleting top-level issue comments via: gh api -X DELETE repos/${{ github.repository }}/issues/comments/<comment_id>
-              - If deletion isn't possible, minimize them via GraphQL "minimizeComment" or edit to prefix "[Superseded by new findings]".
-            - If neither delete nor minimize is possible, reply to that comment: "⚠️ Superseded: issues were found in newer commits".
           - If a previously reported issue appears fixed by nearby changes, reply: ✅ This issue appears to be resolved by the recent changes
           - Analyze ONLY for:
             - Null/undefined dereferences
@@ -80,7 +70,6 @@ jobs:
           - *중요*: 모든 응답은 한국어로 해주세요.
           - Max 10 inline comments total; prioritize the most critical issues
           - One issue per comment; place on the exact changed line
-          - All issue comments MUST be inline (anchored to a file and line/position in the PR diff)
           - Natural tone, specific and actionable; do not mention automated or high-confidence
           - Use emojis: 🚨 Critical 🔒 Security ⚡ Performance ⚠️ Logic ✅ Resolved ✨ Improvement
 
@@ -93,10 +82,7 @@ jobs:
           - If BLOCKING_REVIEW is true and any 🚨 or 🔒 issues were posted: echo "CRITICAL_ISSUES_FOUND=true" >> $GITHUB_ENV
           - Otherwise: echo "CRITICAL_ISSUES_FOUND=false" >> $GITHUB_ENV
           - Always set CRITICAL_ISSUES_FOUND at the end
-          EOF
-          )
-
-          cursor-agent -p "$PROMPT"
+          ' --force --model "$MODEL" --output-format=text
 
       - name: Check blocking review results
         if: env.BLOCKING_REVIEW == 'true'
