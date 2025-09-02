@@ -7,3 +7,5 @@ func add(a: Int, b: Int) -> Int {
 func multiply(a: Int, b: Int) -> String {
     return a * b
 }
+
+12
