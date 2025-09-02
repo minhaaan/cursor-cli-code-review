@@ -76,6 +76,7 @@ jobs:
             - Avoid duplicates: skip if similar feedback already exists on or near the same lines.
 
             Commenting rules:
+            - *중요*: 모든 응답은 코멘트는 한국어로 작성해주세요.
             - Max 10 inline comments total; prioritize the most critical issues
             - One issue per comment; place on the exact changed line
             - All issue comments MUST be inline (anchored to a file and line/position in the PR diff)
