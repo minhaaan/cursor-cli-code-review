@@ -2,12 +2,11 @@ name: Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize]
 
 permissions:
   pull-requests: write
   contents: read
-  issues: write
 
 jobs:
   code-review:
@@ -38,9 +37,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
         run: |
-          cursor-agent --force --model "$MODEL" --output-format=text --print 'You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
-
-          *중요*: 모든 응답은 한국어로 해주세요.
+          cursor-agent -p 'You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
           - Repo: ${{ github.repository }}
@@ -63,7 +60,7 @@ jobs:
           - If CURRENT run finds issues and any prior "no issues" comments exist:
             - Prefer to remove them to avoid confusion:
               - Try deleting top-level issue comments via: gh api -X DELETE repos/${{ github.repository }}/issues/comments/<comment_id>
-              - If deletion isn't possible, minimize them via GraphQL (minimizeComment) or edit to prefix "[Superseded by new findings]".
+              - If deletion isn't possible, minimize them via GraphQL "minimizeComment" or edit to prefix "[Superseded by new findings]".
             - If neither delete nor minimize is possible, reply to that comment: "⚠️ Superseded: issues were found in newer commits".
           - If a previously reported issue appears fixed by nearby changes, reply: ✅ This issue appears to be resolved by the recent changes
           - Analyze ONLY for:
@@ -78,6 +75,7 @@ jobs:
           - Avoid duplicates: skip if similar feedback already exists on or near the same lines.
 
           Commenting rules:
+          - *중요*: 모든 응답은 한국어로 해주세요.
           - Max 10 inline comments total; prioritize the most critical issues
           - One issue per comment; place on the exact changed line
           - All issue comments MUST be inline (anchored to a file and line/position in the PR diff)
@@ -85,13 +83,9 @@ jobs:
           - Use emojis: 🚨 Critical 🔒 Security ⚡ Performance ⚠️ Logic ✅ Resolved ✨ Improvement
 
           Submission:
-          - If there are NO issues to report and an existing top-level comment indicating "no issues" already exists (e.g., "✅ no issues", "No issues found", "LGTM"), do NOT submit another comment. Skip submission to avoid redundancy.
-          - If there are NO issues to report and NO prior "no issues" comment exists, submit one brief summary comment noting no issues.
-          - If there ARE issues to report and a prior "no issues" comment exists, ensure that prior comment is deleted/minimized/marked as superseded before submitting the new review.
-          - If there ARE issues to report, submit ONE review containing ONLY inline comments plus an optional concise summary body. Use the GitHub Reviews API to ensure comments are inline:
-            - Build a JSON array of comments like: [{ "path": "<file>", "position": <diff_position>, "body": "..." }]
-            - Submit via: gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f event=COMMENT -f body="$SUMMARY" -f comments='[$COMMENTS_JSON]'
-          - Do NOT use: gh pr review --approve or --request-changes
+          - Submit one review containing inline comments plus a concise summary
+          - Use only: gh pr review --comment
+          - Do not use: gh pr review --approve or --request-changes
 
           Blocking behavior:
           - If BLOCKING_REVIEW is true and any 🚨 or 🔒 issues were posted: echo "CRITICAL_ISSUES_FOUND=true" >> $GITHUB_ENV
