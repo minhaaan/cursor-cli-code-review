@@ -54,19 +54,22 @@ jobs:
           # GitHub CLI will automatically use GH_TOKEN from environment
 
           # Verify gh CLI is working and authenticated
+          echo "GitHub CLI version:"
           gh --version
+          echo "GitHub CLI auth status:"
           gh auth status
 
           # Create prompt file for cursor-agent
+          # Use sed to replace placeholders with actual values
           cat > /tmp/review_prompt.txt << 'EOF'
           You are operating in a GitHub Actions runner performing automated code review. The gh CLI is available and authenticated via GH_TOKEN. You may comment on pull requests.
 
           Context:
-          - Repo: ${{ github.repository }}
-          - PR Number: ${{ github.event.pull_request.number }}
-          - PR Head SHA: ${{ github.event.pull_request.head.sha }}
-          - PR Base SHA: ${{ github.event.pull_request.base.sha }}
-          - Blocking Review: ${{ env.BLOCKING_REVIEW }}
+          - Repo: __GITHUB_REPOSITORY__
+          - PR Number: __PR_NUMBER__
+          - PR Head SHA: __PR_HEAD_SHA__
+          - PR Base SHA: __PR_BASE_SHA__
+          - Blocking Review: __BLOCKING_REVIEW__
 
           Objectives:
           1) Re-check existing review comments and reply resolved when addressed.
@@ -76,12 +79,12 @@ jobs:
           Procedure:
           - Get existing comments: gh pr view --json comments
           - Get diff: gh pr diff
-          - Get changed files with patches to compute inline positions: gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq '.[] | {filename,patch}'
+          - Get changed files with patches to compute inline positions: gh api repos/__GITHUB_REPOSITORY__/pulls/__PR_NUMBER__/files --paginate --jq '.[] | {filename,patch}'
           - Compute exact inline anchors for each issue (file path + diff position). Comments MUST be placed inline on the changed line in the diff, not as top-level comments.
           - Detect prior top-level "no issues" style comments authored by this bot (match bodies like: "✅ no issues", "No issues found", "LGTM").
           - If CURRENT run finds issues and any prior "no issues" comments exist:
             - Prefer to remove them to avoid confusion:
-              - Try deleting top-level issue comments via: gh api -X DELETE repos/${{ github.repository }}/issues/comments/<comment_id>
+              - Try deleting top-level issue comments via: gh api -X DELETE repos/__GITHUB_REPOSITORY__/issues/comments/<comment_id>
               - If deletion isn't possible, minimize them via GraphQL "minimizeComment" or edit to prefix "[Superseded by new findings]".
             - If neither delete nor minimize is possible, reply to that comment: "⚠️ Superseded: issues were found in newer commits".
           - If a previously reported issue appears fixed by nearby changes, reply: ✅ This issue appears to be resolved by the recent changes
@@ -115,8 +118,47 @@ jobs:
           - Always set CRITICAL_ISSUES_FOUND at the end
           EOF
 
+          # Replace placeholders with actual values using environment variables
+          export REPO_NAME="${{ github.repository }}"
+          export PR_NUM="${{ github.event.pull_request.number }}"
+          export HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          export BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          export BLOCK_REVIEW="${{ env.BLOCKING_REVIEW }}"
+
+          sed -i "s/__GITHUB_REPOSITORY__/$REPO_NAME/g" /tmp/review_prompt.txt
+          sed -i "s/__PR_NUMBER__/$PR_NUM/g" /tmp/review_prompt.txt
+          sed -i "s/__PR_HEAD_SHA__/$HEAD_SHA/g" /tmp/review_prompt.txt
+          sed -i "s/__PR_BASE_SHA__/$BASE_SHA/g" /tmp/review_prompt.txt
+          sed -i "s/__BLOCKING_REVIEW__/$BLOCK_REVIEW/g" /tmp/review_prompt.txt
+
+          # Verify we can access the PR with the final values
+          echo "Testing PR access with final values:"
+          gh pr view $PR_NUM --json number,title || echo "❌ Cannot access PR"
+          echo "PR access test completed"
+
+          # Debug: Show the final prompt content
+          echo "=== Final Prompt Content ==="
+          cat /tmp/review_prompt.txt
+          echo "=== End Prompt ==="
+
           # Run cursor-agent with the prompt file
-          cursor-agent -p "$(cat /tmp/review_prompt.txt)"
+          echo "=== Running cursor-agent ==="
+          # Capture cursor-agent output for debugging
+          CURSOR_OUTPUT=$(cursor-agent -p "$(cat /tmp/review_prompt.txt)" 2>&1)
+          CURSOR_EXIT_CODE=$?
+
+          echo "Cursor-agent exit code: $CURSOR_EXIT_CODE"
+          echo "Cursor-agent output:"
+          echo "$CURSOR_OUTPUT"
+
+          # Check if cursor-agent actually tried to create comments
+          if echo "$CURSOR_OUTPUT" | grep -q "gh pr review"; then
+            echo "✅ Cursor-agent attempted to create PR review"
+          else
+            echo "❌ Cursor-agent did not attempt to create PR review"
+          fi
+
+          echo "=== cursor-agent execution completed ==="
 
       - name: Check blocking review results
         if: env.BLOCKING_REVIEW == 'true'
